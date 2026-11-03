@@ -1,0 +1,13 @@
+[project]
+name = "terrain-backend"
+version = "1.0.0"
+description = "FastAPI backend for Terrain Studio (A-GTAAM DEM analytics)"
+requires-python = ">=3.10"
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
+filterwarnings = ["ignore::DeprecationWarning"]
+
+[tool.ruff]
+line-length = 100

@@ -1,0 +1,2 @@
+httpx>=0.27
+# PyQt6>=6.6      only needed for terrain_client.qt and the example

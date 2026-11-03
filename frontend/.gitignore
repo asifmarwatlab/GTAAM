@@ -1,0 +1,15 @@
+.venv/
+venv/
+__pycache__/
+*.pyc
+.env
+*.log
+.vscode/
+.idea/
+dist/
+build/
+*.egg-info/
+
+
+frontend/backend_dir.txt
+frontend/backend.log

@@ -1,0 +1,8 @@
+fastapi>=0.110
+uvicorn[standard]>=0.29
+pydantic>=2.6
+pydantic-settings>=2.2
+numpy>=1.26
+rasterio>=1.3
+fiona>=1.9        # reads Shapefile, GeoPackage, GPX, GML ... (GeoJSON, KML and CSV need nothing extra)
+contourpy>=1.2

@@ -1,0 +1,12 @@
+__pycache__/
+*.pyc
+.venv/
+.env
+.pytest_cache/
+.ruff_cache/
+storage/*
+!storage/.gitkeep
+data/samples/*.tif
+
+*.tif
+!data/samples/*.tif
