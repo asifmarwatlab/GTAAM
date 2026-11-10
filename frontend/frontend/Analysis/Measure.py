@@ -3,10 +3,12 @@ GROUP = {
     "label": "Measure",
     "tools": [
         dict(id="measure-distance", label="Distance", icon="ruler", kind="panel",
+             handler="measure_distance", run_label="Start measuring",
              tip="Distance",
              fields=[
+                 dict(type="layer", label="Raster layer"),
                  dict(type="combo", label="Units", options=["Metres", "Kilometres", "Feet", "Miles"]),
-                 dict(type="check", label="Snap to pixel centres", value=True),
+                 dict(type="check", label="Snap to pixel centres", value=False),
                  dict(type="check", label="Show elevation difference", value=True),
              ]),
 

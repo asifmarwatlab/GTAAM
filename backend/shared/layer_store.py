@@ -10,6 +10,7 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Any
 
+from core.raster.crs import cell_size_meters
 from core.raster.model import Raster
 from shared.errors import BadRequest, NotFound
 
@@ -40,6 +41,7 @@ class Layer:
         }
         if self.raster is not None:
             d.update(self.raster.summary())
+            d["pixel_size_m"] = list(cell_size_meters(self.raster))    # ground size of one cell, metres
         return d
 
 

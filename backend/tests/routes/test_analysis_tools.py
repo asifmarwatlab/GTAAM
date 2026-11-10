@@ -79,3 +79,44 @@ def test_tools_inspect_and_workspace(client, layer_id):
     assert client.put(f"{ws}/options", json={"units": "imperial"}).json()["units"] == "imperial"
     assert client.put(f"{ws}/options", json={"default_ramp": "nope"}).status_code == 400
     assert client.get(f"{ws}/shortcuts").json() and client.get(f"{ws}/about").json()["version"]
+
+
+
+
+def test_distance_from_clicked_pixels_matches_map_points(client, layer_id):
+    url = f"{API}/analysis/measure/distance"
+    by_pixels = client.post(url, json={"layer_id": layer_id, "pixels": [[0, 0], [0, 100]]}).json()
+    by_points = client.post(url, json={"layer_id": layer_id,
+                                       "points": [[73.0, 33.5], [73.0 + 100 * 0.000277778, 33.5]]}).json()
+    assert by_pixels["total"] == pytest.approx(by_points["total"], rel=1e-6)
+    assert 2500 < by_pixels["total"] < 2650
+
+
+def test_distance_units_and_elevation(client, layer_id):
+    url = f"{API}/analysis/measure/distance"
+    body = {"layer_id": layer_id, "pixels": [[40, 10], [40, 50]]}
+    metres = client.post(url, json=body).json()
+    km = client.post(url, json={**body, "units": "kilometres"}).json()
+    assert km["unit"] == "km"
+    assert km["total"] == pytest.approx(metres["total"] / 1000)
+    assert 380 < metres["elevation"]["difference"] < 400
+    assert km["elevation"]["difference"] == pytest.approx(metres["elevation"]["difference"] / 1000)
+    off = client.post(url, json={**body, "include_elevation": False}).json()
+    assert off["elevation"] is None
+
+
+def test_distance_needs_points_or_pixels(client, layer_id):
+    r = client.post(f"{API}/analysis/measure/distance", json={"layer_id": layer_id})
+    assert r.status_code == 422
+
+
+def test_distance_snap_moves_clicks_to_cell_centres(client, layer_id):
+    url = f"{API}/analysis/measure/distance"
+    clicks = [[10.2, 10.3], [10.4, 60.2]]
+    centres = [[10.5, 10.5], [10.5, 60.5]]
+    snapped = client.post(url, json={"layer_id": layer_id, "pixels": clicks, "snap": True}).json()
+    exact = client.post(url, json={"layer_id": layer_id, "pixels": centres}).json()
+    loose = client.post(url, json={"layer_id": layer_id, "pixels": clicks}).json()
+    assert snapped["total"] == pytest.approx(exact["total"], rel=1e-9)
+    assert loose["total"] != pytest.approx(exact["total"], rel=1e-9)
+

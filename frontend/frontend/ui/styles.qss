@@ -217,7 +217,13 @@ QMenu::separator { height: 1px; background: #dee2e6; margin: 4px 8px; }
 #mapSection { background: #f8f9fa; }
 #mapTabbar { background: #e6edf1; border-bottom: 1px solid #8fa3b0; min-height: 44px; max-height: 44px; }
 #mapTab { background: #f8f9fa; border: 1px solid #dee2e6; border-bottom: 0; border-radius: 8px; min-height: 32px; max-height: 32px; }
+#mapTab[active="false"] { background: #eef2f5; }
+#mapTab[active="false"] #mapTabText { font-weight: 600; color: #6c757d; }
 #mapTabText { font-weight: 700; color: #212529; }
+QToolButton#mapTabClose { border: 0; background: transparent; color: #6c757d; font-size: 15px; padding: 0 4px; border-radius: 4px; }
+QToolButton#mapTabClose:hover { background: #dee2e6; color: #212529; }
+QToolButton#mapTabAdd { background: #ffffff; border: 1px solid #ced4da; border-radius: 7px; min-width: 28px; max-width: 28px; min-height: 28px; max-height: 28px; font-size: 18px; font-weight: 600; color: #343a40; }
+QToolButton#mapTabAdd:hover { background: #e9ecef; }
 #mapContext { color: #495057; font-size: 12.5px; }
 QToolButton#paneButton {
     background: #ffffff; border: 1px solid #ced4da; border-radius: 7px;

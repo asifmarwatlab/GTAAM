@@ -19,8 +19,8 @@ measure_router = APIRouter(prefix="/measure", tags=["Analysis · Measure"])
 
 @measure_router.post("/distance")
 def distance(req: DistanceRequest):
-    """Length of a line, in metres (haversine for lat/lon layers)."""
-    return service.distance(req.layer_id, req.points)
+    """Length of a line in the chosen unit, plus the height difference between its ends."""
+    return service.distance(req.layer_id, req.points, req.pixels, req.units, req.include_elevation, req.snap)
 
 
 @measure_router.post("/area")

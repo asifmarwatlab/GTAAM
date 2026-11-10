@@ -42,6 +42,7 @@ class LayerInfo(BaseModel):
     bounds: tuple[float, float, float, float] | None = None
     crs: str | None = None
     pixel_size: tuple[float, float] | None = None
+    pixel_size_m: tuple[float, float] | None = None      # ground size of one cell, metres
     nodata: float | None = None
 
 

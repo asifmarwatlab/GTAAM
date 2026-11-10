@@ -24,7 +24,7 @@ def write_geotiff(raster: Raster, path: str | Path) -> str:
     with rasterio.open(
         p, "w", driver="GTiff", height=raster.height, width=raster.width, count=1,
         dtype="float32", crs=raster.crs, transform=Affine(*raster.transform), nodata=nodata,
-        compress="deflate",
+        compress="deflate", zlevel=1, predictor=3,   # fast and small for float data
     ) as dst:
         dst.write(out, 1)
     return str(p)

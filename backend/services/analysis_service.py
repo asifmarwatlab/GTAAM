@@ -34,9 +34,28 @@ def _derive(src: Layer, data: np.ndarray, tool: str, label: str) -> dict:
 
 
 # ---- measure ----
-def distance(layer_id: str, points) -> dict:
+def _pixels_to_xy(raster, pixels) -> list[tuple[float, float]]:
+    """Clicked cells (row, col) to map coordinates. (0, 0) is the raster's top-left corner."""
+    rows = np.array([p[0] for p in pixels], float) - 0.5     # rowcol_to_xy gives cell centres,
+    cols = np.array([p[1] for p in pixels], float) - 0.5     # so shift by half a cell
+    xs, ys = raster.rowcol_to_xy(rows, cols)
+    return [(float(x), float(y)) for x, y in zip(xs, ys)]
+
+
+def distance(layer_id: str, points=None, pixels=None, units: str = "metres",
+             include_elevation: bool = True, snap: bool = False) -> dict:
     r = _layer(layer_id).raster
-    return core_distance.path_length(points, is_geographic(r))
+    if points is None:
+        points = _pixels_to_xy(r, pixels)
+    if snap:
+        points = core_distance.snap_to_cell_centres(r, points)
+    result = core_distance.path_length(points, is_geographic(r), units)
+    result["elevation"] = None
+    if include_elevation:
+        change = core_distance.elevation_change(r, points)
+        if change is not None:
+            result["elevation"] = {k: core_distance.from_metres(v, units) for k, v in change.items()}
+    return result
 
 
 def area(layer_id: str, polygon) -> dict:

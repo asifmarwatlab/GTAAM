@@ -620,6 +620,7 @@ class MainWindow(QMainWindow):
         m.statisticsToggled.connect(lambda: self.toggle("statistics"))
         m.discardPreview.connect(self.act_discard_preview)
         m.canvas.regionsChanged.connect(self._regions_changed)
+        m.canvas.measureFinished.connect(self._measure_finished)
         m.canvas.modeChanged.connect(self._mode_changed)
         m.canvas.statusMessage.connect(self.set_status)
         m.pixelSampleRequested.connect(self._request_pixel_sample)
@@ -873,6 +874,53 @@ class MainWindow(QMainWindow):
                 self.contents.set_visible(lyr.id, lyr.name in chosen)
         self.map.canvas.fit()
         self.show_toast(f"{len(chosen)} DEM{'s' if len(chosen) != 1 else ''} selected for the mosaic")
+
+    # ----- Analysis > Measure > Distance: collect clicks on the map, ask the backend ------
+    def run_measure_distance(self, tool: dict, values: dict) -> None:
+        source = next((l for l in self.ws.rasters() if l.name == values.get("raster_layer")), None)
+        if source is None:
+            raise ValueError("Load a raster DEM before measuring.")
+        if not (source.user_added and source.data is None and source.rgba is not None):
+            raise ValueError("This layer cannot be measured yet.")
+        self._measure_request = {
+            "layer": source,
+            "units": str(values.get("units", "Metres")).lower(),
+            "include_elevation": bool(values.get("show_elevation_difference", True)),
+            "snap": bool(values.get("snap_to_pixel_centres", False)),
+        }
+        self.map.canvas.set_mode("measure")
+        self.map.canvas.setFocus()
+
+    def _measure_finished(self, points: list) -> None:
+        req = getattr(self, "_measure_request", None)
+        if req is None:
+            return
+        lyr = req["layer"]
+        display_height, display_width = lyr.rgba.shape[:2]
+        pixels = [[cy * lyr.source_height / display_height, cx * lyr.source_width / display_width]
+                  for cx, cy in points]
+        try:
+            res = self.api_post("/analysis/measure/distance", {
+                "layer_id": lyr.id, "pixels": pixels,
+                "units": req["units"], "include_elevation": req["include_elevation"],
+                "snap": req["snap"]})
+        except Exception as e:
+            self.show_toast(f"Distance: {e}")
+            return
+        unit = res["unit"]
+        text = f"Total distance: {res['total']:,.2f} {unit}"
+        if len(res["segments"]) > 1:
+            text += "\nLegs: " + ", ".join(f"{s:,.2f}" for s in res["segments"]) + f" {unit}"
+        el = res.get("elevation")
+        if el:
+            text += (f"\nElevation: {el['start']:,.2f} to {el['end']:,.2f} {unit}"
+                     f"\nDifference: {el['difference']:+,.2f} {unit}")
+        elif req["include_elevation"]:
+            text += "\nElevation: a point is outside the DEM or on NoData."
+        QMessageBox.information(self, "Distance", text)
+        self.set_status(f"Distance · {lyr.name} · {res['total']:,.2f} {unit}")
+
+
 
     def run_terrain_derivative(self, tool: dict, values: dict) -> None:
         source_name = values.get("input_dem")

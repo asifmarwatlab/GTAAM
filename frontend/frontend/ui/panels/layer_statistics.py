@@ -89,6 +89,7 @@ class Layer:
     bounds: tuple[float, float, float, float] | None = None
     crs: str | None = None
     pixel_size: tuple[float, float] | None = None
+    pixel_size_m: tuple[float, float] | None = None    # ground size of one cell in metres (from the backend)
     nodata: float | None = None
     shapes: Optional[dict] = None    # vector file: shapes in drawing cells (from the backend)
     vec_color: str = "#1f6f9a"
@@ -191,6 +192,7 @@ class SampleWorkspace:
             bounds=metadata.get("bounds"),
             crs=metadata.get("crs"),
             pixel_size=metadata.get("pixel_size"),
+            pixel_size_m=metadata.get("pixel_size_m"),
             nodata=metadata.get("nodata"),
             _stats=stats,
         )

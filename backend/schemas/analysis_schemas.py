@@ -1,6 +1,6 @@
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from schemas.common import XY
 
@@ -14,7 +14,17 @@ class AspectRequest(LayerRequest):
 
 
 class DistanceRequest(LayerRequest):
-    points: list[XY] = Field(min_length=2)        # in the layer's coordinate system
+    points: list[XY] | None = Field(None, min_length=2)    # map coordinates (the layer's CRS)
+    pixels: list[XY] | None = Field(None, min_length=2)    # clicked cells as (row, col)
+    units: Literal["metres", "kilometres", "feet", "miles"] = "metres"
+    include_elevation: bool = True
+    snap: bool = False                  # move each click to the centre of its cell
+
+    @model_validator(mode="after")
+    def _one_kind_of_point(self):
+        if (self.points is None) == (self.pixels is None):
+            raise ValueError("Send either 'points' or 'pixels', not both and not neither.")
+        return self
 
 
 class AreaRequest(LayerRequest):
