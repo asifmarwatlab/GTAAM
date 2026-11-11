@@ -4,9 +4,9 @@ GROUP = {
     "tools": [
 
         dict(id="show-Swipe", label="Swipe", icon="swipe", size="large",
-             kind="toggle", toggle="Swipe", tip="Swipe"),
+             kind="action", action="swipe", tip="Swipe"),
 
         dict(id="show-Annotation", label="Annotation", icon="annotation", size="large",
-                     kind="toggle", toggle="Annotation", tip="Annotation"),
+                     kind="toggle", toggle="annotation", tip="Annotation"),
     ],
 }

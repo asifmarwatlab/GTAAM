@@ -120,3 +120,16 @@ def test_distance_snap_moves_clicks_to_cell_centres(client, layer_id):
     assert snapped["total"] == pytest.approx(exact["total"], rel=1e-9)
     assert loose["total"] != pytest.approx(exact["total"], rel=1e-9)
 
+
+def test_distance_auto_unit_picks_metres_or_kilometres(client, layer_id):
+    url = f"{API}/analysis/measure/distance"
+    short = client.post(url, json={"layer_id": layer_id, "units": "auto",
+                                   "points": [[73.001, 33.4], [73.002, 33.4]]}).json()
+    long_ = client.post(url, json={"layer_id": layer_id, "units": "auto",
+                                   "points": [[73.001, 33.4], [73.016, 33.4]]}).json()
+    assert short["unit"] == "m" and short["total"] < 1000
+    assert long_["unit"] == "km" and 0.5 < long_["total"] < 5
+    assert short["elevation_unit"] == long_["elevation_unit"] == "m"      # heights stay in metres
+    metres = client.post(url, json={"layer_id": layer_id, "units": "kilometres",
+                                    "points": [[73.001, 33.4], [73.016, 33.4]]}).json()
+    assert metres["elevation_unit"] == "km"                                # explicit units still convert heights

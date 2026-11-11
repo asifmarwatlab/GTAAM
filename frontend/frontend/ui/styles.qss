@@ -287,3 +287,5 @@ QToolButton#scaleButton::menu-indicator { image: none; width: 0; }
     background: #45484c; color: #f8f9fa; border-radius: 10px;
     padding: 11px 20px; font-weight: 600; font-size: 13.5px;
 }
+#layerRow[outside="true"] QLabel { color: #8a99a3; }
+#layerRow[outside="true"] #swatch { background: #c9d3d9; }

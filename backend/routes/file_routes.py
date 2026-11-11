@@ -34,15 +34,20 @@ def open_project(req: ProjectPath):
     return service.open_project(req.path)
 
 
+def _canvases(req) -> list[dict] | None:
+    return None if req is None or req.canvases is None else [c.model_dump() for c in req.canvases]
+
+
 @project_router.post("/save", response_model=SaveResult)
 def save_project(req: ProjectSave | None = None):
     return service.save_project(req.path if req else None, req.gui if req else None,
-                                req.name if req else None)
+                                req.name if req else None, _canvases(req),
+                                req.active_canvas if req else None)
 
 
 @project_router.post("/save-as", response_model=SaveResult)
 def save_project_as(req: ProjectSaveAs):
-    return service.save_project(req.path, req.gui, req.name)
+    return service.save_project(req.path, req.gui, req.name, _canvases(req), req.active_canvas)
 
 # ======================================================================
 # File · Add Data  (/file/add-data)

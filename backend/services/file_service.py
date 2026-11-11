@@ -41,8 +41,9 @@ def open_project(path: str) -> dict:
     return result
 
 
-def save_project(path: str | None, gui: dict | None = None, name: str | None = None) -> dict:
-    return project.save(path, gui, name)
+def save_project(path: str | None, gui: dict | None = None, name: str | None = None,
+                 canvases: list[dict] | None = None, active_canvas: str | None = None) -> dict:
+    return project.save(path, gui, name, canvases, active_canvas)
 
 
 # ---- add data ----

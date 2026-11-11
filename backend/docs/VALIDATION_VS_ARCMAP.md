@@ -29,5 +29,43 @@ Projected data is the clean test: no degree-to-metre conversion, so only the for
 
 For geographic DEMs the app converts degrees to metres using the WGS84 series at the raster's mid-latitude (`core/raster/crs.py`, `metres_per_degree`). ArcMap uses a fixed value and treats cells as square. The app's cell shape (about 25.8 m x 30.8 m at 33.5 N) is the more accurate one. For comparisons with ArcMap, use a projected DEM.
 
+## Distance (geographic DEM, geodesic lengths)
+
+Checked on 10 Nov 2026. Three lines drawn in ArcMap 10.8 on `test_lines.shp` (WGS 84). ArcMap length from the Python window: `Polyline.getLength("GEODESIC", "METERS")`. The app: `POST /analysis/measure/distance` with the same vertices as `points` (longitude, latitude), units metres, on the geographic DEM.
+
+| Line | Vertices (lon, lat) | ArcMap geodesic | App | Difference |
+|---|---|---|---|---|
+| Short | (73.2, 33.3) to (73.25, 33.33) | 5,722.69 m | 5,722.6868 m | under 1 cm |
+| Long | (73.1, 33.1) to (73.9, 33.9) | 115,754.26 m | 115,754.2576 m | under 1 cm |
+| Bends | (73.1, 33.2), (73.3, 33.5), (73.5, 33.3), (73.8, 33.6) | 110,497.63 m | 110,497.6280 m | under 1 cm |
+
+The app uses Vincenty's method on the WGS84 ellipsoid for degree-based layers (`core/measure/distance.py`, `geodesic_distance`). An earlier version used a sphere (haversine) and was off by 3 m, 71 m and 100 m on these lines. The three ArcMap values are also automated tests (`test_geodesic_matches_arcmap`).
+
+### Distance: elevation difference
+
+ArcMap `GetCellValue_management` returns the value of the cell a point falls in. The app normally blends the four nearest cells (bilinear), so this check used `"snap": true`, which moves each point to its cell centre. The points were chosen away from cell edges.
+
+| Point (lon, lat) | ArcMap `GetCellValue` | App (`snap` on) |
+|---|---|---|
+| Start (73.1234, 33.1234) | 531 m | 531.0000 m |
+| End (73.8765, 33.8765) | 1850 m | 1850.0000 m |
+| Difference (end minus start) | 1319 m | 1319.0000 m |
+
+Exact match (differences of 1e-10 m are float rounding). Without snap the app gives a bilinear value, which can differ slightly from the cell value by design; that was not compared with ArcMap.
+
+### Distance: projected DEM (`dem_utm43.tif`, WGS 84 / UTM 43N)
+
+Three lines in UTM metres. ArcMap: `Polyline.getLength("PLANAR", "METERS")` on a polyline in the raster's spatial reference. App: the same vertices through `POST /analysis/measure/distance`, which measures flat lengths on the grid for a projected layer.
+
+| Line | Vertices (x, y) | ArcMap PLANAR | App | Difference |
+|---|---|---|---|---|
+| A | (350000, 3700000), (352000, 3701500) | 2,500.0000 m | 2,500.0000 m | 0 |
+| B | (330000, 3680000), (390000, 3740000) | 84,852.8137 m | 84,852.8137 m | 0 |
+| C | (335000, 3690000), (350000, 3720000), (365000, 3700000), (385000, 3730000) | 94,596.5324 m | 94,596.5324 m | 0 |
+
+ArcMap GEODESIC on the same lines is longer (2,500.32 / 84,865.94 / 94,610.88 m, about 0.015%) because UTM shrinks distances slightly. A projected layer is measured on the grid, so the planar value is the one to compare.
+
+Not yet compared with ArcMap: measuring a loaded line layer.
+
 ## Not yet validated
-Roughness, TPI, Ruggedness (no single ArcMap tool; Raster Calculator comparison planned), Layer Statistics and Histogram, Distance, Area, Elevation Profile, and the remaining tabs.
+Layer Statistics and Histogram, Area, Elevation Profile, and the remaining tabs. Roughness, TPI and Ruggedness have no single ArcMap tool and were compared with Raster Calculator; their numbers still need to be added to this file.

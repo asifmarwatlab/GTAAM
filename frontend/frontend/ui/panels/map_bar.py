@@ -6,12 +6,12 @@ from PyQt6.QtGui import (
     QBrush, QColor, QFont, QImage, QPainter, QPainterPath, QPen, QPolygonF,
 )
 from PyQt6.QtWidgets import (
-    QFrame, QGridLayout, QHBoxLayout, QLabel, QMenu, QPushButton, QToolButton,
+    QFrame, QGridLayout, QHBoxLayout, QInputDialog, QLabel, QMenu, QPushButton, QToolButton,
     QVBoxLayout, QWidget,
 )
 
 from ui.panels.icon_generator import icon, pixmap
-from ui.panels.layer_statistics import SampleWorkspace, fmt
+from ui.panels.layer_statistics import LAYER_MIME, SampleWorkspace, fmt
 
 PX_METERS = 0.000264583      
 
@@ -22,7 +22,7 @@ class MapCanvas(QWidget):
     pixelMoved = pyqtSignal(float, float)     
     viewChanged = pyqtSignal()
     regionsChanged = pyqtSignal()
-    measureFinished = pyqtSignal(list)  
+    measureChanged = pyqtSignal(list, bool)   # points so far (cells), line finished?
     modeChanged = pyqtSignal(str)
     hintChanged = pyqtSignal(str)             
     statusMessage = pyqtSignal(str)
@@ -37,6 +37,9 @@ class MapCanvas(QWidget):
         self.oy = 0.0
         self.mode = "explore"                 # explore | draw | select
         self.draft: list[tuple[float, float]] = []
+        self.measure_done = False             # a measured line is finished and stays on the map
+        self._zoom_start = None               # corner of the zoom box being dragged (screen position)
+        self._zoom_end = None
         self.hover: tuple[float, float] | None = None
         self.selected_region = -1
         self.preview: str | None = None        # None | "edit" | "mosaic"
@@ -130,9 +133,12 @@ class MapCanvas(QWidget):
     def set_mode(self, mode: str) -> None:
         if mode not in ("draw", "measure") or mode != self.mode:
             self.draft.clear()
+            self.measure_done = False
         hints = {
             "draw": "Click to add vertices · Double-click to finish · Esc to cancel",
             "measure": "Click points along the line · Double-click to finish · Right-click removes the last point · Esc to cancel",
+            "zoom_in": "Drag a box around the area to zoom in to it · Click to zoom in · Esc to stop",
+            "zoom_out": "Drag a box to zoom out (the view shrinks into the box) · Click to zoom out · Esc to stop",
         }
         self.hintChanged.emit(hints.get(mode, ""))
         self.mode = mode
@@ -144,6 +150,8 @@ class MapCanvas(QWidget):
         self.setCursor({"explore": Qt.CursorShape.OpenHandCursor,
                         "draw": Qt.CursorShape.CrossCursor,
                         "measure": Qt.CursorShape.CrossCursor,
+                        "zoom_in": Qt.CursorShape.CrossCursor,
+                        "zoom_out": Qt.CursorShape.CrossCursor,
                         "select": Qt.CursorShape.PointingHandCursor}[self.mode])
 
     def set_preview(self, kind: str | None) -> None:
@@ -155,8 +163,10 @@ class MapCanvas(QWidget):
             self.draft.clear()
             self.update()
             self.statusMessage.emit("Drawing cancelled")
-        if self.mode in ("draw", "measure"):
+        self._zoom_start = self._zoom_end = None
+        if self.mode in ("draw", "measure", "zoom_in", "zoom_out"):
             self.set_mode("explore")
+        self.update()
 
     def finish_polygon(self) -> None:
         if len(self.draft) >= 3:
@@ -170,11 +180,11 @@ class MapCanvas(QWidget):
         self.set_mode("explore")
 
     def finish_measure(self) -> None:
+        """Double-click / Enter: the line is finished and stays on the map; the tool stays active."""
         if len(self.draft) >= 2:
-            points = list(self.draft)
-            self.draft.clear()
-            self.set_mode("explore")
-            self.measureFinished.emit(points)
+            self.measure_done = True
+            self.update()
+            self.measureChanged.emit(list(self.draft), True)
         else:
             self.statusMessage.emit("A line needs at least two points")
 
@@ -368,7 +378,7 @@ class MapCanvas(QWidget):
             p.setBrush(Qt.BrushStyle.NoBrush)
             for a, b in zip(pts, pts[1:]):
                 p.drawLine(a, b)
-            if self.hover is not None:
+            if self.hover is not None and not self.measure_done:
                 dash = QPen(QColor("#e07b00"), 1.5, Qt.PenStyle.DashLine)
                 p.setPen(dash)
                 p.drawLine(pts[-1], self.to_screen(*self.hover))
@@ -376,6 +386,12 @@ class MapCanvas(QWidget):
             p.setBrush(QColor("#ffffff"))
             for pt in pts:
                 p.drawEllipse(pt, 4, 4)
+
+        # zoom box being dragged
+        if self._zoom_start is not None and self._zoom_end is not None:
+            p.setPen(QPen(QColor("#1f6f9a"), 1.5, Qt.PenStyle.DashLine))
+            p.setBrush(QColor(31, 111, 154, 40))
+            p.drawRect(QRectF(self._zoom_start, self._zoom_end).normalized())
         p.end()
 
     @staticmethod
@@ -432,15 +448,26 @@ class MapCanvas(QWidget):
             self._press = e.position()
             self._dragged = False
             self._last = e.position()
+            if e.button() == Qt.MouseButton.LeftButton and self.mode in ("zoom_in", "zoom_out"):
+                self._zoom_start = self._zoom_end = e.position()
         elif e.button() == Qt.MouseButton.RightButton and self.mode in ("draw", "measure") and self.draft:
+            if self.measure_done:
+                self.measure_done = False
             self.draft.pop()
             self.update()
+            if self.mode == "measure":
+                self.measureChanged.emit(list(self.draft), False)
 
     def mouseMoveEvent(self, e) -> None:
         pos = e.position()
         cx, cy = self.to_cell(pos.x(), pos.y())
         self.hover = (cx, cy)
         self.pixelMoved.emit(cx, cy)
+        if self._zoom_start is not None and e.buttons() & Qt.MouseButton.LeftButton:
+            self._zoom_end = pos                      # dragging the zoom box: no panning
+            self._last = pos
+            self.update()
+            return
         if self._press is not None and e.buttons() & (Qt.MouseButton.LeftButton | Qt.MouseButton.MiddleButton):
             if not self._dragged and (pos - self._press).manhattanLength() > 4:
                 self._dragged = True
@@ -455,7 +482,33 @@ class MapCanvas(QWidget):
         if self.draft:
             self.update()
 
+    def _finish_zoom_box(self, end: QPointF) -> None:
+        """Zoom In: the dragged box fills the view. Zoom Out: the view shrinks into the box.
+        A plain click zooms in or out by 2 around the click."""
+        a, b = self._zoom_start, end
+        self._zoom_start = self._zoom_end = None
+        zoom_in = self.mode == "zoom_in"
+        dx, dy = abs(b.x() - a.x()), abs(b.y() - a.y())
+        if max(dx, dy) < 8:
+            self.zoom_by(2.0 if zoom_in else 0.5, b)
+            self.update()
+            return
+        w, h = max(self.width(), 1), max(self.height(), 1)
+        mid = QPointF((a.x() + b.x()) / 2, (a.y() + b.y()) / 2)
+        mx, my = self.to_cell(mid.x(), mid.y())                 # the centre of the box on the map
+        factor = min(w / max(dx, 1), h / max(dy, 1)) if zoom_in else min(max(dx, 1) / w, max(dy, 1) / h)
+        self.scale = max(self.MIN_SCALE, min(self.MAX_SCALE, self.scale * factor))
+        self.ox = w / 2 - mx * self.scale                       # box centre goes to the view centre
+        self.oy = h / 2 - my * self.scale
+        self.update()
+        self.viewChanged.emit()
+
     def mouseReleaseEvent(self, e) -> None:
+        if self._zoom_start is not None and e.button() == Qt.MouseButton.LeftButton:
+            self._press = None
+            self._dragged = False
+            self._finish_zoom_box(e.position())
+            return
         if e.button() != Qt.MouseButton.LeftButton or self._press is None:
             self._press = None
             return
@@ -470,8 +523,13 @@ class MapCanvas(QWidget):
             return
         cx, cy = self.to_cell(e.position().x(), e.position().y())
         if self.mode in ("draw", "measure"):
+            if self.mode == "measure" and self.measure_done:      # a new line starts
+                self.draft.clear()
+                self.measure_done = False
             self.draft.append((cx, cy))
             self.update()
+            if self.mode == "measure":
+                self.measureChanged.emit(list(self.draft), False)
         elif self.mode == "select":
             hit = -1
             for i in range(len(self.ws.regions) - 1, -1, -1):
@@ -725,6 +783,8 @@ class MapSurface(QWidget):
         self.nav.move(w - self.nav.width() - 14, 14)
         self.north.move(w - self.north.width() - 14, 14 + self.nav.height() + 12)
         self.scale_bar.move(14, h - self.scale_bar.height() - 14)
+        self.annotation.adjustSize()
+        self.annotation.move(14, h - self.scale_bar.height() - self.annotation.height() - 26)
         self.inspector.adjustSize()
         self.inspector.move(w - self.inspector.width() - 14, h - self.inspector.height() - 14)
         for box in (self.hint, self.banner):
@@ -743,21 +803,28 @@ class MapSurface(QWidget):
 # ----------------------------------------------------------------------------
 # whole centre section
 # ----------------------------------------------------------------------------
+class _NoDot:
+    """Stands in for the old unsaved-changes dot, which the tab bar no longer shows."""
+    def setVisible(self, _on: bool) -> None:
+        pass
+
+
 class MapTab(QFrame):
     """One map canvas tab: icon, name and a close button (only when more than one tab)."""
     clicked = pyqtSignal()
     closeRequested = pyqtSignal()
+    renameRequested = pyqtSignal()
+    layerDropped = pyqtSignal(str)
 
     def __init__(self, name: str) -> None:
         super().__init__()
+        self.setAcceptDrops(True)
         self.setObjectName("mapTab")
         self.setProperty("active", False)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         lay = QHBoxLayout(self)
         lay.setContentsMargins(12, 0, 6, 0)
         lay.setSpacing(7)
-        icon_lbl = QLabel()
-        icon_lbl.setPixmap(pixmap("terrain", "#1f6f9a", 18))
         self.text = QLabel(name)
         self.text.setObjectName("mapTabText")
         self.close_btn = QToolButton()
@@ -765,7 +832,6 @@ class MapTab(QFrame):
         self.close_btn.setText("\u00d7")
         self.close_btn.setToolTip("Close this map canvas")
         self.close_btn.clicked.connect(self.closeRequested)
-        lay.addWidget(icon_lbl)
         lay.addWidget(self.text)
         lay.addWidget(self.close_btn)
 
@@ -782,12 +848,34 @@ class MapTab(QFrame):
             self.clicked.emit()
         super().mousePressEvent(e)
 
+    def mouseDoubleClickEvent(self, e) -> None:
+        if e.button() == Qt.MouseButton.LeftButton:
+            self.renameRequested.emit()
+
+    def dragEnterEvent(self, e) -> None:
+        if e.mimeData().hasFormat(LAYER_MIME):
+            e.acceptProposedAction()
+
+    def dragMoveEvent(self, e) -> None:
+        if e.mimeData().hasFormat(LAYER_MIME):
+            e.acceptProposedAction()
+
+    def dropEvent(self, e) -> None:
+        if e.mimeData().hasFormat(LAYER_MIME):
+            self.layerDropped.emit(bytes(e.mimeData().data(LAYER_MIME)).decode("utf-8"))
+            e.acceptProposedAction()
+
 
 class MapSection(QFrame):
     layersToggled = pyqtSignal()
     statisticsToggled = pyqtSignal()
     discardPreview = pyqtSignal()
     pixelSampleRequested = pyqtSignal(str, int, int)
+    canvasAdded = pyqtSignal(str, str)            # id, name
+    canvasSwitched = pyqtSignal(str)              # id of the canvas now shown
+    canvasClosed = pyqtSignal(str)
+    canvasRenamed = pyqtSignal(str, str)          # id, new name
+    layerDropped = pyqtSignal(str, str)           # layer id, canvas id
 
     SCALE_PRESETS = [5000, 10000, 20000, 50000, 100000, 250000]
 
@@ -819,18 +907,12 @@ class MapSection(QFrame):
         self.btn_add_tab.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_add_tab.clicked.connect(self.new_canvas)
         bl.addWidget(self.btn_add_tab)
-        td = QLabel()
-        td.setObjectName("tinyDot")
-        td.setFixedSize(6, 6)
-        td.setToolTip("Unsaved changes")
-        td.hide()                      # shown while the project has unsaved changes
-        self.tab_dot = td
-        bl.addWidget(td)
+        self.tab_dot = _NoDot()            # unsaved changes show as * in the window title
         self._tabs: list[MapTab] = []
         self._tab_views: dict[MapTab, tuple[float, float, float]] = {}
         self._current_tab: MapTab | None = None
         self._next_canvas_number = 1
-        self._add_tab()
+        self._add_tab()                      # Map Canvas 1 (id "canvas-1", same as the workspace)
         bl.addStretch(1)
         self.btn_layers = self._pane_button("layers", "Layers", "Show or hide layers")
         self.btn_stats = self._pane_button("stats", "Statistics", "Show or hide layer statistics")
@@ -911,6 +993,7 @@ class MapSection(QFrame):
     def _mode_changed(self, mode: str) -> None:
         self.tool_label.setText({"explore": "Explore", "draw": "Draw editing region",
                                  "measure": "Measure distance",
+                                 "zoom_in": "Zoom in", "zoom_out": "Zoom out",
                                  "select": "Select region"}[mode])
 
     def _pixel_moved(self, cx: float, cy: float) -> None:
@@ -1050,11 +1133,15 @@ class MapSection(QFrame):
         self.project_name = name          # the tabs show map canvas names, not the file name
 
     # ---- map canvas tabs ----
-    def _add_tab(self) -> MapTab:
-        tab = MapTab(f"Map Canvas {self._next_canvas_number}")
+    def _add_tab(self, name: str | None = None) -> MapTab:
+        n = self._next_canvas_number
         self._next_canvas_number += 1
+        tab = MapTab(name or f"Map Canvas {n}")
+        tab.canvas_id = f"canvas-{n}"
         tab.clicked.connect(lambda t=tab: self._select_tab(t))
         tab.closeRequested.connect(lambda t=tab: self._close_tab(t))
+        tab.renameRequested.connect(lambda t=tab: self._rename_tab(t))
+        tab.layerDropped.connect(lambda lid, t=tab: self.layerDropped.emit(lid, t.canvas_id))
         self._tabs.append(tab)
         self.tab_box.addWidget(tab)
         if self._current_tab is None:
@@ -1068,8 +1155,9 @@ class MapSection(QFrame):
             t.set_closable(len(self._tabs) > 1)
 
     def new_canvas(self) -> None:
-        """The + button: open Map Canvas 2, 3 ... showing the same layers, with its own view."""
+        """The + button: open an empty Map Canvas 2, 3 ... (add layers to it, or drag them in)."""
         tab = self._add_tab()
+        self.canvasAdded.emit(tab.canvas_id, tab.text.text())
         self._select_tab(tab, fit=True)
 
     def _select_tab(self, tab: MapTab, fit: bool = False) -> None:
@@ -1081,6 +1169,7 @@ class MapSection(QFrame):
             self._current_tab.set_active(False)
         self._current_tab = tab
         tab.set_active(True)
+        self.canvasSwitched.emit(tab.canvas_id)          # the window swaps in this canvas's layers
         if fit or tab not in self._tab_views:
             c.fit()
         else:
@@ -1098,6 +1187,70 @@ class MapSection(QFrame):
         self._tab_views.pop(tab, None)
         self.tab_box.removeWidget(tab)
         tab.deleteLater()
+        self._refresh_tab_buttons()
+        self.canvasClosed.emit(tab.canvas_id)
+
+    def _rename_tab(self, tab: MapTab) -> None:
+        name, ok = QInputDialog.getText(self, "Rename map canvas", "Name:", text=tab.text.text())
+        name = name.strip()
+        if ok and name and name != tab.text.text():
+            tab.text.setText(name)
+            self.canvasRenamed.emit(tab.canvas_id, name)
+
+    def canvas_views(self) -> dict[str, dict]:
+        """Zoom and pan of every canvas tab, for saving."""
+        c = self.canvas
+        out = {}
+        for t in self._tabs:
+            sc, ox, oy = (c.scale, c.ox, c.oy) if t is self._current_tab else self._tab_views.get(t, (None, 0, 0))
+            if sc is not None:
+                out[t.canvas_id] = {"scale": sc, "ox": ox, "oy": oy}
+        return out
+
+    def set_canvases(self, items: list[dict], active_id: str | None) -> None:
+        """Opened project: one tab per saved canvas (id, name, view). Does not touch the layers."""
+        for t in self._tabs:
+            self.tab_box.removeWidget(t)
+            t.deleteLater()
+        self._tabs, self._tab_views, self._current_tab = [], {}, None
+        top = 0
+        for it in items:
+            tab = self._add_tab(it["name"])
+            tab.canvas_id = it["id"]
+            if it.get("view"):
+                v = it["view"]
+                self._tab_views[tab] = (v["scale"], v["ox"], v["oy"])
+            tail = str(it["id"]).rsplit("-", 1)[-1]
+            top = max(top, int(tail)) if tail.isdigit() else top
+        shown = next((t for t in self._tabs if t.canvas_id == active_id), self._tabs[0])
+        for t in self._tabs:
+            t.set_active(t is shown)
+        self._current_tab = shown
+        self._next_canvas_number = max(top, len(items)) + 1
+        self._refresh_tab_buttons()
+
+    def restore_current_view(self) -> None:
+        """Put back the zoom and pan the shown canvas had when the project was saved."""
+        v = self._tab_views.get(self._current_tab)
+        if v:
+            c = self.canvas
+            c.scale, c.ox, c.oy = v
+            c.update()
+            c.viewChanged.emit()
+
+    def reset_canvases(self) -> None:
+        """New project / reset: back to a single Map Canvas 1."""
+        for t in self._tabs[1:]:
+            self.tab_box.removeWidget(t)
+            t.deleteLater()
+        first = self._tabs[0]
+        self._tabs = [first]
+        first.text.setText("Map Canvas 1")
+        first.canvas_id = "canvas-1"
+        first.set_active(True)
+        self._current_tab = first
+        self._tab_views = {}
+        self._next_canvas_number = 2
         self._refresh_tab_buttons()
 
     def update_scale(self) -> None:
@@ -1134,7 +1287,7 @@ class MapSection(QFrame):
     def set_element_visible(self, name: str, on: bool) -> None:
         s = self.surface
         widget = {"north_arrow": s.north, "scale_bar": s.scale_bar,
-              "pixel_inspector": s.inspector}.get(name)
+              "pixel_inspector": s.inspector, "annotation": s.annotation}.get(name)
         if widget is not None:
             widget.setVisible(on)
 

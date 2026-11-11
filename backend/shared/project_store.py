@@ -14,7 +14,7 @@ from shared.errors import BadRequest
 from shared.layer_store import Layer, layer_store
 
 FORMAT = "A-GTAAM-project"
-FORMAT_VERSION = 2
+FORMAT_VERSION = 3
 EXT = ".agtaam"                       # a JSON file with this extension
 ALLOWED_EXT = {".agtaam", ".json"}    # .json = older projects, still readable
 
@@ -47,6 +47,8 @@ class ProjectStore:
         self.created = _now()
         self.workspace = default_workspace()
         self.gui: dict = {}                # the window's own state (view, colour ramp, ...)
+        self.canvases: list[dict] = []     # map canvases: each lists its own layers (shared data)
+        self.active_canvas: str | None = None
         self._saved_version = layer_store.version
 
     def is_dirty(self) -> bool:
@@ -62,6 +64,31 @@ class ProjectStore:
 
     def reset_workspace(self) -> None:
         self.workspace = default_workspace()
+
+    # ---- map canvases ----
+    @staticmethod
+    def _prune(canvases: list[dict], keep: set[str]) -> list[dict]:
+        """The canvases without references to layers that are gone."""
+        out = []
+        for c in canvases:
+            c = dict(c)
+            c["layers"] = [l for l in c.get("layers", []) if l["id"] in keep]
+            out.append(c)
+        return out
+
+    def forget_layer(self, layer_id: str) -> None:
+        """A layer was removed from the project: take it out of every canvas."""
+        self.canvases = self._prune(self.canvases, {l["id"] for c in self.canvases
+                                                    for l in c.get("layers", [])} - {layer_id})
+
+    @staticmethod
+    def _legacy_canvas(entries: list[dict], gui: dict) -> dict:
+        """Older projects had one map: it becomes 'Map Canvas 1' holding every layer."""
+        view = gui.get("view") if isinstance(gui.get("view"), dict) else None
+        regions = gui.get("regions") if isinstance(gui.get("regions"), list) else None
+        return {"id": "canvas-1", "name": "Map Canvas 1", "view": view, "regions": regions,
+                "layers": [{"id": e["id"], "visible": e.get("visible", True),
+                            "opacity": e.get("opacity", 1.0)} for e in reversed(entries)]}
 
     # ---- save / open ----
     @staticmethod
@@ -88,7 +115,8 @@ class ProjectStore:
         return None
 
     def save(self, path: str | None = None, gui: dict | None = None,
-             name: str | None = None) -> dict:
+             name: str | None = None, canvases: list[dict] | None = None,
+             active_canvas: str | None = None) -> dict:
         target = path or self.path
         if not target:
             raise BadRequest("No file path yet - use Save As.", code="no_path")
@@ -99,6 +127,9 @@ class ProjectStore:
             self.name = name
         if gui is not None:
             self.gui = gui
+        if canvases is not None:
+            self.canvases = canvases
+            self.active_canvas = active_canvas
         data_dir = target_p.with_name(target_p.stem + "_data")
         saved, skipped = [], []
         for layer in reversed(layer_store.list()):          # bottom first
@@ -121,7 +152,9 @@ class ProjectStore:
                           "meta": layer.meta})
         doc = {"format": FORMAT, "version": FORMAT_VERSION, "name": self.name,
                "created": self.created, "saved": _now(), "workspace": self.workspace,
-               "gui": self.gui, "layers": saved}
+               "gui": self.gui, "layers": saved,
+               "canvases": self._prune(self.canvases, {l["id"] for l in saved}),
+               "active_canvas": self.active_canvas}
         target_p.parent.mkdir(parents=True, exist_ok=True)
         tmp = target_p.with_name(target_p.name + ".tmp")     # write fully, then swap in:
         tmp.write_text(json.dumps(doc, indent=2), encoding="utf-8")   # a crash never
@@ -176,9 +209,22 @@ class ProjectStore:
         self.created = doc.get("created", _now())
         self.workspace = {**default_workspace(), **doc.get("workspace", {})}
         self.gui = doc.get("gui", {}) or {}
+        here = {l.id for l in layer_store.list()}
+        entries = [e for e in doc.get("layers", []) if e.get("id") in here]
+        saved_canvases = doc.get("canvases")
+        if saved_canvases:
+            self.canvases = self._prune(saved_canvases, here)
+            self.active_canvas = doc.get("active_canvas")
+        else:                                               # a project from before canvases
+            self.canvases = [self._legacy_canvas(entries, self.gui)]
+            self.active_canvas = "canvas-1"
+        if self.active_canvas not in {c["id"] for c in self.canvases}:
+            self.active_canvas = self.canvases[0]["id"]
         self.path = str(p)
         self._saved_version = layer_store.version
-        return {**self.info(), "missing_layers": missing, "gui": self.gui}
+        return {**self.info(), "missing_layers": missing, "gui": self.gui,
+                "canvases": self.canvases, "active_canvas": self.active_canvas}
 
 
 project = ProjectStore()
+layer_store.on_remove(project.forget_layer)

@@ -16,7 +16,7 @@ class AspectRequest(LayerRequest):
 class DistanceRequest(LayerRequest):
     points: list[XY] | None = Field(None, min_length=2)    # map coordinates (the layer's CRS)
     pixels: list[XY] | None = Field(None, min_length=2)    # clicked cells as (row, col)
-    units: Literal["metres", "kilometres", "feet", "miles"] = "metres"
+    units: Literal["metres", "kilometres", "feet", "miles", "auto"] = "metres"   # auto: m below 1 km, else km
     include_elevation: bool = True
     snap: bool = False                  # move each click to the centre of its cell
 

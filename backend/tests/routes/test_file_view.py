@@ -254,3 +254,75 @@ def test_open_project_returns_every_layer_with_display_data(client, hill, tmp_pa
     assert len(res["layers"]) == 1 and res["layers"][0]["kind"] == "raster"
     d = res["layers"][0]["display"]
     assert d["ramp"] == "terrain" and d["statistics"]["count"] > 0 and d["histogram"]["counts"]
+
+
+def _canvas(cid, name, layers, **extra):
+    return {"id": cid, "name": name, "layers": layers, **extra}
+
+
+def test_project_saves_and_opens_two_canvases(client, hill, tmp_path):
+    """Madam's case: one DEM per canvas, plus one layer shared by both."""
+    a = write_geotiff(hill, tmp_path / "islamabad.tif")
+    b = write_geotiff(hill, tmp_path / "karachi.tif")
+    client.post(f"{API}/file/project/new", json={"name": "P"})
+    isb = client.post(f"{API}/file/add-data/raster", json={"path": a}).json()["id"]
+    khi = client.post(f"{API}/file/add-data/raster", json={"path": b}).json()["id"]
+    canvases = [
+        _canvas("c1", "Islamabad", [{"id": isb, "visible": True, "opacity": 1.0}],
+                view={"scale": 2.0}, regions=[[[0, 0], [1, 1], [0, 1]]]),
+        _canvas("c2", "Karachi", [{"id": khi, "visible": False, "opacity": 0.4},
+                                  {"id": isb, "visible": True, "opacity": 0.8}]),   # isb is shared
+    ]
+    saved = client.post(f"{API}/file/project/save-as",
+                        json={"path": str(tmp_path / "two.agtaam"), "canvases": canvases,
+                              "active_canvas": "c2"}).json()
+    client.post(f"{API}/file/project/new", json={"name": "Other"})
+    opened = client.post(f"{API}/file/project/open", json={"path": saved["path"]}).json()
+    assert opened["active_canvas"] == "c2"
+    got = {c["id"]: c for c in opened["canvases"]}
+    assert [c["name"] for c in opened["canvases"]] == ["Islamabad", "Karachi"]
+    assert got["c1"]["view"] == {"scale": 2.0} and got["c1"]["regions"]
+    assert [l["id"] for l in got["c2"]["layers"]] == [khi, isb]
+    assert got["c2"]["layers"][0]["visible"] is False and got["c2"]["layers"][1]["opacity"] == 0.8
+
+
+def test_removing_a_layer_takes_it_out_of_every_canvas(client, hill, tmp_path):
+    tif = write_geotiff(hill, tmp_path / "dem.tif")
+    client.post(f"{API}/file/project/new", json={"name": "P"})
+    lid = client.post(f"{API}/file/add-data/raster", json={"path": tif}).json()["id"]
+    both = [_canvas("c1", "One", [{"id": lid}]), _canvas("c2", "Two", [{"id": lid}])]
+    path = str(tmp_path / "p.agtaam")
+    client.post(f"{API}/file/project/save-as", json={"path": path, "canvases": both})
+    assert client.delete(f"{API}/file/add-data/layers/{lid}").status_code in (200, 204)
+    client.post(f"{API}/file/project/save")                  # keeps the canvases it already has
+    opened = client.post(f"{API}/file/project/open", json={"path": path}).json()
+    assert all(c["layers"] == [] for c in opened["canvases"]) and len(opened["canvases"]) == 2
+
+
+def test_old_project_opens_as_one_map_canvas(client, hill, tmp_path):
+    tif = write_geotiff(hill, tmp_path / "dem.tif")
+    client.post(f"{API}/file/project/new", json={"name": "P"})
+    lid = client.post(f"{API}/file/add-data/raster", json={"path": tif}).json()["id"]
+    path = str(tmp_path / "old.agtaam")
+    client.post(f"{API}/file/project/save-as", json={"path": path, "gui": {"view": {"scale": 3.0}}})
+    import json
+    doc = json.loads((tmp_path / "old.agtaam").read_text(encoding="utf-8"))
+    doc.pop("canvases"), doc.pop("active_canvas")           # what a version-2 file looked like
+    (tmp_path / "old.agtaam").write_text(json.dumps(doc), encoding="utf-8")
+    opened = client.post(f"{API}/file/project/open", json={"path": path}).json()
+    assert [c["name"] for c in opened["canvases"]] == ["Map Canvas 1"]
+    only = opened["canvases"][0]
+    assert [l["id"] for l in only["layers"]] == [lid] and only["view"] == {"scale": 3.0}
+    assert opened["active_canvas"] == only["id"]
+
+
+def test_canvas_input_is_checked(client, tmp_path):
+    path = str(tmp_path / "x.agtaam")
+    dup = [_canvas("c1", "A", []), _canvas("c1", "B", [])]
+    assert client.post(f"{API}/file/project/save-as", json={"path": path, "canvases": dup}).status_code == 422
+    bad_active = {"path": path, "canvases": [_canvas("c1", "A", [])], "active_canvas": "zzz"}
+    assert client.post(f"{API}/file/project/save-as", json=bad_active).status_code == 422
+    twice = [_canvas("c1", "A", [{"id": "x"}, {"id": "x"}])]
+    assert client.post(f"{API}/file/project/save-as", json={"path": path, "canvases": twice}).status_code == 422
+    bad_opacity = [_canvas("c1", "A", [{"id": "x", "opacity": 2}])]
+    assert client.post(f"{API}/file/project/save-as", json={"path": path, "canvases": bad_opacity}).status_code == 422

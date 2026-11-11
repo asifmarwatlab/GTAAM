@@ -2,8 +2,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Callable, Optional
 import numpy as np
-from PyQt6.QtCore import QPointF, QRectF, QSize, Qt, QTimer, pyqtSignal
-from PyQt6.QtGui import QColor, QLinearGradient, QPainter, QPen, QPolygonF
+from PyQt6.QtCore import QMimeData, QPointF, QRectF, QSize, Qt, QTimer, pyqtSignal
+from PyQt6.QtGui import QColor, QDrag, QLinearGradient, QPainter, QPen, QPolygonF
 from PyQt6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -119,10 +119,119 @@ class SampleWorkspace:
         self.layers = []
         self.regions = []
         self.contours = []
+        # map canvases: ws.layers and ws.regions are always those of the active canvas
+        self.canvases = [{"id": "canvas-1", "name": "Map Canvas 1", "layers": self.layers,
+                          "regions": self.regions, "settings": {}}]
+        self.active_canvas = "canvas-1"
+        self.orphans: list[Layer] = []       # layers of closed canvases: still in the project
+
+    # ----- map canvases -----------------------------------------------------
+    def canvas_entry(self, cid: str) -> dict:
+        for c in self.canvases:
+            if c["id"] == cid:
+                return c
+        raise KeyError(cid)
+
+    def add_canvas(self, cid: str, name: str) -> None:
+        """A new canvas starts empty, like ArcGIS Pro's New Map."""
+        self.canvases.append({"id": cid, "name": name, "layers": [], "regions": [], "settings": {}})
+
+    def rename_canvas(self, cid: str, name: str) -> None:
+        self.canvas_entry(cid)["name"] = name
+
+    def remove_canvas(self, cid: str) -> None:
+        if len(self.canvases) > 1 and cid != self.active_canvas:
+            gone = self.canvas_entry(cid)
+            self.canvases.remove(gone)
+            for l in gone["layers"]:                 # the layers stay in the project
+                if not any(l in c["layers"] for c in self.canvases) and l not in self.orphans:
+                    self.orphans.append(l)
+
+    def canvases_for_save(self) -> list[dict]:
+        """Each canvas as the backend stores it: its layers (top first) with visible and opacity."""
+        out = []
+        for c in self.canvases:
+            live = c["id"] == self.active_canvas
+            layers = []
+            for l in c["layers"]:
+                vis, op = (l.visible, l.opacity) if live else c["settings"].get(l.id, (l.visible, l.opacity))
+                layers.append({"id": l.id, "visible": bool(vis), "opacity": max(0.0, min(1.0, op / 100))})
+            out.append({"id": c["id"], "name": c["name"], "layers": layers,
+                        "regions": [[list(pt) for pt in poly] for poly in c["regions"]]})
+        return out
+
+    def load_canvases(self, saved: list[dict], active: str | None) -> None:
+        """Rebuild the canvases of an opened project from what the backend sent.
+        Every loaded layer is in self.all_layers() at this point."""
+        everything = {l.id: l for l in self.all_layers()}
+        self.canvases, used = [], set()
+        for c in saved:
+            layers, settings = [], {}
+            for ref in c.get("layers", []):
+                l = everything.get(ref["id"])
+                if l is None or any(l is x for x in layers):
+                    continue
+                layers.append(l)
+                settings[l.id] = (bool(ref.get("visible", True)), int(round(float(ref.get("opacity", 1.0)) * 100)))
+                used.add(l.id)
+            regions = [[tuple(pt) for pt in poly] for poly in (c.get("regions") or [])]
+            self.canvases.append({"id": c["id"], "name": c["name"], "layers": layers,
+                                  "regions": regions, "settings": settings})
+        self.orphans = [l for l in everything.values() if l.id not in used]
+        if not self.canvases:
+            self.canvases = [{"id": "canvas-1", "name": "Map Canvas 1", "layers": [], "regions": [], "settings": {}}]
+        if active not in {c["id"] for c in self.canvases}:
+            active = self.canvases[0]["id"]
+        cur = self.canvas_entry(active)
+        for l in cur["layers"]:
+            if l.id in cur["settings"]:
+                l.visible, l.opacity = cur["settings"][l.id]
+        self.layers, self.regions, self.active_canvas = cur["layers"], cur["regions"], active
+
+    def all_layers(self) -> list:
+        """Every layer loaded in the project: the active canvas's first, then the others."""
+        out = list(self.layers)
+        for l in [l for c in self.canvases for l in c["layers"]] + self.orphans:
+            if not any(l is o for o in out):
+                out.append(l)
+        return out
+
+    def in_canvas(self, lid: str) -> bool:
+        return any(l.id == lid for l in self.layers)
+
+    def switch_canvas(self, cid: str) -> None:
+        """Make another canvas the active one: ws.layers / ws.regions now point at its own lists."""
+        if cid == self.active_canvas:
+            return
+        cur = self.canvas_entry(self.active_canvas)
+        cur["settings"] = {l.id: (l.visible, l.opacity) for l in self.layers}
+        new = self.canvas_entry(cid)
+        for l in new["layers"]:
+            if l.id in new["settings"]:
+                l.visible, l.opacity = new["settings"][l.id]
+        self.layers, self.regions = new["layers"], new["regions"]
+        self.active_canvas = cid
+
+    def add_layer_to_canvas(self, lid: str, cid: str) -> bool:
+        """Drag a layer into another canvas. The layer is shared, not copied."""
+        target = self.canvas_entry(cid)
+        if any(l.id == lid for l in target["layers"]):
+            return False
+        src = next((l for l in self.all_layers() if l.id == lid), None)
+        if src is None:
+            return False
+        target["layers"].insert(0, src)                  # a layer goes on top of its canvas
+        if src in self.orphans:
+            self.orphans.remove(src)
+        if cid == self.active_canvas:
+            src.visible = True
+        else:
+            target["settings"][lid] = (True, src.opacity)
+        return True
 
     # ----- helpers ----------------------------------------------------------
     def layer(self, lid: str) -> Layer:
-        for l in self.layers:
+        for l in self.all_layers():
             if l.id == lid:
                 return l
         raise KeyError(lid)
@@ -523,21 +632,43 @@ class _Clickable(QFrame):
             self.clicked.emit()
 
 
+LAYER_MIME = "application/x-agtaam-layer"
+
+
 class LayerRow(_Clickable):
     visibilityToggled = pyqtSignal(str, bool)
     menuRequested = pyqtSignal(str, object)
 
-    def __init__(self, lyr: Layer) -> None:
+    def mousePressEvent(self, e) -> None:
+        self._press_pos = e.position().toPoint() if e.button() == Qt.MouseButton.LeftButton else None
+        super().mousePressEvent(e)
+
+    def mouseMoveEvent(self, e) -> None:
+        """Drag this layer onto a map canvas tab to show it in that canvas too."""
+        start = getattr(self, "_press_pos", None)
+        if start is not None and (e.position().toPoint() - start).manhattanLength() > 8:
+            self._press_pos = None
+            mime = QMimeData()
+            mime.setData(LAYER_MIME, self.lid.encode("utf-8"))
+            drag = QDrag(self)
+            drag.setMimeData(mime)
+            drag.setPixmap(self.grab())
+            drag.exec(Qt.DropAction.CopyAction)
+            return
+        super().mouseMoveEvent(e)
+
+    def __init__(self, lyr: Layer, in_canvas: bool = True) -> None:
         super().__init__()
         self.lid = lyr.id
         self.setObjectName("layerRow")
         self.setProperty("selected", False)
+        self.setProperty("outside", not in_canvas)      # loaded, but not shown in this canvas
         lay = QHBoxLayout(self)
         lay.setContentsMargins(8, 4, 4, 4)
         lay.setSpacing(8)
         self.check = AppCheckBox()
-        self.check.setChecked(lyr.visible)
-        self.check.setToolTip(f"Show {lyr.name}")
+        self.check.setChecked(lyr.visible and in_canvas)
+        self.check.setToolTip(f"Show {lyr.name}" if in_canvas else f"Add {lyr.name} to this canvas")
         self.check.toggled.connect(lambda v: self.visibilityToggled.emit(self.lid, v))
         sw = QLabel()
         sw.setObjectName("swatch")
@@ -679,7 +810,7 @@ class ContentsPane(QFrame):
         self.group_boxes.clear()
         self.legend_widgets.clear()
         for gid, gname, gicon in self.GROUPS:
-            members = [l for l in self.ws.layers if l.group == gid]
+            members = [l for l in self.ws.all_layers() if l.group == gid]
             #  new lines added for making the layers column a bit dynamic
             head = _Clickable(body)
             head.setObjectName("groupHeading")
@@ -714,7 +845,7 @@ class ContentsPane(QFrame):
                     hint.setObjectName("emptyHint")
                     bl.addWidget(hint)
 
-                row = LayerRow(lyr)
+                row = LayerRow(lyr, self.ws.in_canvas(lyr.id))
                 row.clicked.connect(lambda lid=lyr.id: self._row_clicked(lid))
                 row.visibilityToggled.connect(self.visibilityChanged)
                 row.menuRequested.connect(self._show_menu)

@@ -49,12 +49,19 @@ def distance(layer_id: str, points=None, pixels=None, units: str = "metres",
         points = _pixels_to_xy(r, pixels)
     if snap:
         points = core_distance.snap_to_cell_centres(r, points)
-    result = core_distance.path_length(points, is_geographic(r), units)
+    geographic = is_geographic(r)
+    elevation_unit = units
+    if units == "auto":              # a short line in metres, a long one in kilometres; heights stay in metres
+        total_m = core_distance.path_length(points, geographic, "metres")["total"]
+        units = "kilometres" if total_m >= 1000 else "metres"
+        elevation_unit = "metres"
+    result = core_distance.path_length(points, geographic, units)
     result["elevation"] = None
+    result["elevation_unit"] = core_distance.UNIT_SYMBOLS[elevation_unit]
     if include_elevation:
         change = core_distance.elevation_change(r, points)
         if change is not None:
-            result["elevation"] = {k: core_distance.from_metres(v, units) for k, v in change.items()}
+            result["elevation"] = {k: core_distance.from_metres(v, elevation_unit) for k, v in change.items()}
     return result
 
 

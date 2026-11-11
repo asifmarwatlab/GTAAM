@@ -11,9 +11,9 @@ from PyQt6.QtCore import (
 )
 from PyQt6.QtGui import QIcon, QImage, QKeySequence, QPixmap, QShortcut
 from PyQt6.QtWidgets import (
-    QButtonGroup, QDialog, QFileDialog, QFrame, QHBoxLayout, QLabel, QLineEdit,
+    QButtonGroup, QComboBox, QDialog, QFileDialog, QFrame, QHBoxLayout, QLabel, QLineEdit,
     QListWidget, QListWidgetItem, QMainWindow, QMessageBox, QPushButton,
-    QMenu, QSplitter, QToolButton, QVBoxLayout, QWidget, QApplication,
+    QMenu, QScrollArea, QSplitter, QToolButton, QVBoxLayout, QWidget, QApplication,
 )
 import httpx
 import numpy as np
@@ -464,6 +464,141 @@ class ProjectNameDialog(QDialog):
         self.accept()
 
 
+class MeasureWindow(QDialog):
+    """A small floating Measure box, like ArcMap's: it updates as points are clicked and has a
+    units menu. Segment is the last straight piece, Length is the whole line."""
+    unitsChanged = pyqtSignal(str)          # backend unit name: auto, metres, kilometres, feet, miles
+    closed = pyqtSignal()
+
+    UNITS = [("Automatic", "auto"), ("Metres", "metres"), ("Kilometres", "kilometres"),
+             ("Feet", "feet"), ("Miles", "miles")]
+
+    def __init__(self, parent: QWidget) -> None:
+        super().__init__(parent)
+        self.setObjectName("measureWindow")
+        self.setWindowTitle("Measure")
+        self.setWindowFlag(Qt.WindowType.Tool, True)
+        self.setModal(False)
+        self.setMinimumWidth(310)
+        self.setStyleSheet("""
+            QDialog#measureWindow { background: #e4e7ea; }
+            QFrame#measureCard { background: #f4f5f6; border: 1px solid #d0d4d8; border-radius: 10px; }
+            QLabel#measureMethod { color: #252a2f; font-size: 12px; font-weight: 700; }
+            QLabel#measureLayer { color: #6b737b; font-size: 11px; }
+            QLabel#measureHint { color: #626a72; font-size: 12px; }
+            QLabel#measureSection { color: #6b737b; font-size: 10px; font-weight: 700; letter-spacing: 1px; }
+            QLabel#measureName { color: #495057; font-size: 12px; }
+            QLabel#measureValue { color: #252a2f; font-size: 13px; font-weight: 700; }
+            QLabel#measureBig { color: #1f6f9a; font-size: 13px; font-weight: 700; }
+            QLabel#measureNote { color: #7a6a3a; font-size: 11px; }
+            QFrame#measureRule { background: #dfe3e6; max-height: 1px; min-height: 1px; border: none; }
+            QComboBox { background: #ffffff; border: 1px solid #c5cbd1; border-radius: 6px; padding: 3px 8px; }
+        """)
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(10, 10, 10, 10)
+        card = QFrame()
+        card.setObjectName("measureCard")
+        body = QVBoxLayout(card)
+        body.setContentsMargins(14, 12, 14, 12)
+        body.setSpacing(5)
+
+        top = QHBoxLayout()
+        units_label = QLabel("Units")
+        units_label.setObjectName("measureName")
+        self.units = QComboBox()
+        for text, key in self.UNITS:
+            self.units.addItem(text, key)
+        self.units.currentIndexChanged.connect(lambda _i: self.unitsChanged.emit(self.units.currentData()))
+        top.addWidget(units_label)
+        top.addWidget(self.units, 1)
+        body.addLayout(top)
+
+        self.method = QLabel("Line measurement")
+        self.method.setObjectName("measureMethod")
+        self.layer = QLabel("")
+        self.layer.setObjectName("measureLayer")
+        self.hint = QLabel("Click the first point on the map.")
+        self.hint.setObjectName("measureHint")
+        self.hint.setWordWrap(True)
+        body.addWidget(self.method)
+        body.addWidget(self.layer)
+        body.addWidget(self.hint)
+
+        self.rows: dict[str, tuple[QLabel, QLabel]] = {}
+        self.result_box = QWidget()
+        rl = QVBoxLayout(self.result_box)
+        rl.setContentsMargins(0, 4, 0, 0)
+        rl.setSpacing(3)
+        for key, name, big in (("segment", "Segment", False), ("length", "Length", True)):
+            rl.addLayout(self._row(key, name, big))
+        self.elev_rule = QFrame()
+        self.elev_rule.setObjectName("measureRule")
+        rl.addWidget(self.elev_rule)
+        for key, name in (("start", "Start elevation"), ("end", "End elevation"),
+                          ("diff", "Elevation difference")):
+            rl.addLayout(self._row(key, name, False))
+        self.note = QLabel("Elevation is not available: a point is outside the DEM or on NoData.")
+        self.note.setObjectName("measureNote")
+        self.note.setWordWrap(True)
+        rl.addWidget(self.note)
+        body.addWidget(self.result_box)
+        outer.addWidget(card)
+        self.show_waiting()
+
+    def _row(self, key: str, name: str, big: bool) -> QHBoxLayout:
+        line = QHBoxLayout()
+        a = QLabel(name + ":")
+        a.setObjectName("measureName")
+        b = QLabel("")
+        b.setObjectName("measureBig" if big else "measureValue")
+        b.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        line.addWidget(a)
+        line.addStretch(1)
+        line.addWidget(b)
+        self.rows[key] = (a, b)
+        return line
+
+    def set_layer(self, name: str, geographic: bool) -> None:
+        self.method.setText(f"Line measurement ({'Geodesic' if geographic else 'Planar'})")
+        self.layer.setText(name)
+
+    def show_waiting(self, text: str = "Click the first point on the map.") -> None:
+        self.hint.setText(text)
+        self.hint.show()
+        self.result_box.hide()
+        self.adjustSize()
+
+    def show_result(self, res: dict, finished: bool, want_elevation: bool) -> None:
+        unit = res["unit"]
+        d = 3 if unit in ("km", "mi") else 2
+        self.hint.setText("Double-click to finish \u00b7 Right-click removes the last point" if not finished
+                          else "Line finished. Click the map to measure a new line.")
+        self.hint.show()
+        self.rows["segment"][1].setText(f"{res['segments'][-1]:,.{d}f} {unit}")
+        self.rows["length"][1].setText(f"{res['total']:,.{d}f} {unit}")
+        el = res.get("elevation")
+        eu = res.get("elevation_unit", unit)
+        ed = 3 if eu in ("km", "mi") else 2
+        for key in ("start", "end", "diff"):
+            for w in self.rows[key]:
+                w.setVisible(bool(el))
+        self.elev_rule.setVisible(bool(el))
+        self.note.setVisible(not el and want_elevation)
+        if el:
+            self.rows["start"][1].setText(f"{el['start']:,.{ed}f} {eu}")
+            self.rows["end"][1].setText(f"{el['end']:,.{ed}f} {eu}")
+            self.rows["diff"][1].setText(f"{el['difference']:+,.{ed}f} {eu}")
+        self.result_box.show()
+        self.adjustSize()
+
+    def closeEvent(self, e) -> None:
+        self.closed.emit()
+        super().closeEvent(e)
+
+    def reject(self) -> None:           # Esc or the close button
+        self.close()
+
+
 # ----------------------------------------------------------------------------
 # main window
 # ----------------------------------------------------------------------------
@@ -480,9 +615,9 @@ class MainWindow(QMainWindow):
         self.selected: str | None = None
         self.project_path: Path | None = None
         self.project_name = PROJECT_TITLE
-        self.flags = {"contents": True, "statistics": True, "pixel_inspector": True,
+        self.flags = {"contents": True, "statistics": False, "pixel_inspector": True,
                       "north_arrow": True, "scale_bar": True, "map_label": True,
-                      "annotation": True}
+                      "annotation": False}
         self._saved_sizes = [290, 900, 330]
         self._pixel_pool = QThreadPool(self)
         self._pixel_pool.setMaxThreadCount(1)
@@ -590,6 +725,8 @@ class MainWindow(QMainWindow):
         self.splitter.setStretchFactor(1, 1)
         self.splitter.setStretchFactor(2, 0)
         self.splitter.setSizes(self._saved_sizes)
+        self.inspector.setVisible(False)          # statistics open only when asked for (ribbon or the Statistics button)
+        self.map.set_pane_buttons(self.flags["contents"], False)
         return self.splitter
 
     def _build_statusbar(self) -> QWidget:
@@ -620,7 +757,12 @@ class MainWindow(QMainWindow):
         m.statisticsToggled.connect(lambda: self.toggle("statistics"))
         m.discardPreview.connect(self.act_discard_preview)
         m.canvas.regionsChanged.connect(self._regions_changed)
-        m.canvas.measureFinished.connect(self._measure_finished)
+        m.canvas.measureChanged.connect(self._measure_changed)
+        m.canvasAdded.connect(self.ws.add_canvas)
+        m.canvasSwitched.connect(self._canvas_switched)
+        m.canvasClosed.connect(self.ws.remove_canvas)
+        m.canvasRenamed.connect(self.ws.rename_canvas)
+        m.layerDropped.connect(self._layer_dropped)
         m.canvas.modeChanged.connect(self._mode_changed)
         m.canvas.statusMessage.connect(self.set_status)
         m.pixelSampleRequested.connect(self._request_pixel_sample)
@@ -876,49 +1018,66 @@ class MainWindow(QMainWindow):
         self.show_toast(f"{len(chosen)} DEM{'s' if len(chosen) != 1 else ''} selected for the mosaic")
 
     # ----- Analysis > Measure > Distance: collect clicks on the map, ask the backend ------
-    def run_measure_distance(self, tool: dict, values: dict) -> None:
-        source = next((l for l in self.ws.rasters() if l.name == values.get("raster_layer")), None)
+    def act_measure_distance(self) -> None:
+        """Analysis > Distance: open the Measure box and start measuring on the selected DEM (or the first)."""
+        def measurable(l) -> bool:
+            return l.group == "raster" and l.user_added and l.data is None and l.rgba is not None
+        chosen = next((l for l in self.ws.layers if l.id == self.selected and measurable(l)), None)
+        source = chosen or next((l for l in self.ws.rasters() if measurable(l)), None)
         if source is None:
-            raise ValueError("Load a raster DEM before measuring.")
-        if not (source.user_added and source.data is None and source.rgba is not None):
-            raise ValueError("This layer cannot be measured yet.")
-        self._measure_request = {
-            "layer": source,
-            "units": str(values.get("units", "Metres")).lower(),
-            "include_elevation": bool(values.get("show_elevation_difference", True)),
-            "snap": bool(values.get("snap_to_pixel_centres", False)),
-        }
+            self.show_toast("Load a raster DEM before measuring.")
+            return
+        if getattr(self, "_measure_window", None) is None:
+            self._measure_window = MeasureWindow(self)
+            self._measure_window.unitsChanged.connect(lambda _u: self._measure_update())
+            self._measure_window.closed.connect(self._measure_closed)
+        self._measure_layer = source
+        self._measure_points: list = []
+        self._measure_done = False
+        w = self._measure_window
+        w.set_layer(source.name, "4326" in (source.crs or ""))
+        w.show_waiting()
+        if not w.isVisible():
+            w.move(self.map.mapToGlobal(QPoint(24, 70)))
+        w.show()
+        w.raise_()
         self.map.canvas.set_mode("measure")
         self.map.canvas.setFocus()
 
-    def _measure_finished(self, points: list) -> None:
-        req = getattr(self, "_measure_request", None)
-        if req is None:
+    def _measure_changed(self, points: list, finished: bool) -> None:
+        """A point was added or removed (or the line finished): measure again and update the box."""
+        self._measure_points, self._measure_done = points, finished
+        self._measure_update()
+
+    def _measure_update(self) -> None:
+        w = getattr(self, "_measure_window", None)
+        lyr = getattr(self, "_measure_layer", None)
+        points = getattr(self, "_measure_points", [])
+        if w is None or lyr is None:
             return
-        lyr = req["layer"]
+        if len(points) < 2:
+            w.show_waiting("Click the second point." if points else "Click the first point on the map.")
+            return
         display_height, display_width = lyr.rgba.shape[:2]
         pixels = [[cy * lyr.source_height / display_height, cx * lyr.source_width / display_width]
                   for cx, cy in points]
         try:
             res = self.api_post("/analysis/measure/distance", {
-                "layer_id": lyr.id, "pixels": pixels,
-                "units": req["units"], "include_elevation": req["include_elevation"],
-                "snap": req["snap"]})
+                "layer_id": lyr.id, "pixels": pixels, "units": w.units.currentData(),
+                "include_elevation": True})
         except Exception as e:
             self.show_toast(f"Distance: {e}")
             return
-        unit = res["unit"]
-        text = f"Total distance: {res['total']:,.2f} {unit}"
-        if len(res["segments"]) > 1:
-            text += "\nLegs: " + ", ".join(f"{s:,.2f}" for s in res["segments"]) + f" {unit}"
-        el = res.get("elevation")
-        if el:
-            text += (f"\nElevation: {el['start']:,.2f} to {el['end']:,.2f} {unit}"
-                     f"\nDifference: {el['difference']:+,.2f} {unit}")
-        elif req["include_elevation"]:
-            text += "\nElevation: a point is outside the DEM or on NoData."
-        QMessageBox.information(self, "Distance", text)
-        self.set_status(f"Distance · {lyr.name} · {res['total']:,.2f} {unit}")
+        w.show_result(res, self._measure_done, True)
+        self.set_status(f"Distance \u00b7 {lyr.name} \u00b7 {res['total']:,.3f} {res['unit']}")
+
+    def _measure_closed(self) -> None:
+        """The Measure box was closed: leave measuring and clear the line."""
+        self._measure_points = []
+        if self.map.canvas.mode == "measure":
+            self.map.canvas.set_mode("explore")
+        self.map.canvas.update()
+
 
 
 
@@ -1070,6 +1229,9 @@ class MainWindow(QMainWindow):
         self.ribbon.refresh_checks()
 
     def set_layer_visible(self, lid: str, on: bool) -> None:
+        if on and not self.ws.in_canvas(lid):             # ticking a loaded layer adds it to this canvas
+            self.ws.add_layer_to_canvas(lid, self.ws.active_canvas)
+            QTimer.singleShot(0, self.contents.rebuild)      # after this click is fully handled
         self.ws.layer(lid).visible = on
         self.mark_dirty()
         self.map.canvas.update()
@@ -1116,7 +1278,9 @@ class MainWindow(QMainWindow):
             self.inspector.show_layer(self.ws.layer("regions"))
 
     def _mode_changed(self, mode: str) -> None:
-        pass
+        w = getattr(self, "_measure_window", None)
+        if mode != "measure" and w is not None and w.isVisible():
+            w.hide()
 
     # ----- actions (referenced by tool["action"]) ---------------------------
     def act_mode_explore(self) -> None:
@@ -1140,10 +1304,17 @@ class MainWindow(QMainWindow):
         self.show_toast("All editing regions removed")
 
     def act_zoom_in(self) -> None:
-        self.map.canvas.zoom_by(1.5)
+        """Zoom In tool: drag a box around an area to zoom to it (or click to zoom in)."""
+        self.map.canvas.set_mode("zoom_in")
+        self.map.canvas.setFocus()
 
     def act_zoom_out(self) -> None:
-        self.map.canvas.zoom_by(1 / 1.5)
+        """Zoom Out tool: drag a box or click to zoom out."""
+        self.map.canvas.set_mode("zoom_out")
+        self.map.canvas.setFocus()
+
+    def act_swipe(self) -> None:
+        self.show_toast("Swipe is not available yet")
 
     def act_full_extent(self) -> None:
         self.map.canvas.fit()
@@ -1186,6 +1357,38 @@ class MainWindow(QMainWindow):
         self.map.show_preview(None)
         self.show_toast("Preview discarded")
 
+    def _restore_canvases(self, res: dict) -> None:
+        """Opened project: bring back its map canvases (an old project arrives as one canvas)."""
+        saved = res.get("canvases") or []
+        if not saved:
+            return
+        self.ws.load_canvases(saved, res.get("active_canvas"))
+        self.map.set_canvases([{"id": c["id"], "name": c["name"], "view": c.get("view")} for c in saved],
+                              self.ws.active_canvas)
+
+    def _canvas_switched(self, cid: str) -> None:
+        """Another map canvas tab was chosen: show its own layers and regions."""
+        self.ws.switch_canvas(cid)
+        self.map.canvas.set_preview(None)
+        self.map.show_preview(None)
+        self.map.canvas.set_mode("explore")
+        self.map.canvas.invalidate()
+        self.contents.rebuild()
+        self.map.update_annotation()
+        self.on_layer_selected(self.ws.layers[0].id if self.ws.layers else None)
+        self.ribbon.refresh_checks()
+
+    def _layer_dropped(self, lid: str, cid: str) -> None:
+        """A layer was dragged onto a canvas tab: that canvas shows it too (the data is shared)."""
+        name = self.ws.canvas_entry(cid)["name"]
+        if not self.ws.add_layer_to_canvas(lid, cid):
+            self.set_status(f"That layer is already in {name}")
+            return
+        if cid == self.ws.active_canvas:
+            self.contents.rebuild()
+            self.map.canvas.invalidate()
+        self.set_status(f"Layer added to {name}")
+
     def _refresh_everything(self) -> None:
         self.map.canvas.invalidate()
         self.contents.rebuild()
@@ -1199,6 +1402,7 @@ class MainWindow(QMainWindow):
 
     def act_reset_workspace(self) -> None:
         self.ws.reset()
+        self.map.reset_canvases()
         self._refresh_everything()
         self.show_toast("Sample workspace restored")
 
@@ -1255,6 +1459,7 @@ class MainWindow(QMainWindow):
             self.show_toast(f"New project failed: {_message(exc)}")
             return
         self.ws.reset()
+        self.map.reset_canvases()
         self.project_path = None
         self.project_name = PROJECT_TITLE
         self._refresh_everything()
@@ -1280,6 +1485,14 @@ class MainWindow(QMainWindow):
             "order": [l.id for l in self.ws.layers],
         }
 
+    def _canvases_state(self) -> dict:
+        """The map canvases (own layers, view and regions each), stored by the backend in the project."""
+        views = self.map.canvas_views()
+        canvases = self.ws.canvases_for_save()
+        for c in canvases:
+            c["view"] = views.get(c["id"])
+        return {"canvases": canvases, "active_canvas": self.ws.active_canvas}
+
     def act_save_project(self) -> bool:
         """Save over the current file (asks for a name the first time). True = saved."""
         if self.project_path is None:
@@ -1299,7 +1512,8 @@ class MainWindow(QMainWindow):
     def _save_to(self, path: Path, name: str, route: str) -> bool:
         QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
         try:
-            res = self.api_post(route, {"path": str(path), "name": name, "gui": self._gui_state()})
+            res = self.api_post(route, {"path": str(path), "name": name, "gui": self._gui_state(),
+                                        **self._canvases_state()})
         except Exception as exc:
             QApplication.restoreOverrideCursor()
             QMessageBox.warning(self, "Save project", f"Could not save the project:\n{_message(exc)}")
@@ -1328,6 +1542,7 @@ class MainWindow(QMainWindow):
         try:
             res = self.api_post("/file/project/open", {"path": str(path)})
             problems = self._redraw_layers(res.get("layers") or [], res.get("gui") or {})
+            self._restore_canvases(res)
         except Exception as exc:
             QApplication.restoreOverrideCursor()
             QMessageBox.warning(self, "Open project", f"Could not open the project:\n{_message(exc)}")
@@ -1337,6 +1552,7 @@ class MainWindow(QMainWindow):
         self._last_dir = str(path.parent)
         self.project_name = res.get("name", path.stem)
         self._refresh_everything()
+        self.map.restore_current_view()
         v = (res.get("gui") or {}).get("view")
         if v:
             c = self.map.canvas
@@ -1356,6 +1572,7 @@ class MainWindow(QMainWindow):
         """Draw the layers the backend sent. Returns notes about layers that cannot be drawn."""
         notes: list[str] = []
         self.ws.reset()
+        self.map.reset_canvases()
         if gui.get("ramp"):
             self.ws.ramp_name = gui["ramp"]
         bottom_first = list(reversed(layers))                  # the backend lists the top layer first
