@@ -35,6 +35,7 @@ from ui.panels.icon_generator import icon, pixmap
 from ui.panels.layer_statistics import (
     ContentsPane, InspectorPane, Layer, SampleWorkspace, SettingsForm, set_settings_provider, invalidate_project_defaults,
 )
+from ui.panels import map_geometry
 from ui.panels.map_bar import PROFILE_COLORS, MapSection
 from ui.panels.project_settings import ProjectSettingsDialog
 
@@ -2116,9 +2117,7 @@ class MainWindow(QMainWindow):
             w.show_waiting(("Click the first corner on the map.", "Click the second corner.",
                             "Click the third corner to see the area.")[len(points)])
             return
-        display_height, display_width = lyr.rgba.shape[:2]
-        pixels = [[cy * lyr.source_height / display_height, cx * lyr.source_width / display_width]
-                  for cx, cy in points]
+        pixels = self._canvas_to_pixels(lyr, points)
         try:
             res = self.api_post("/analysis/measure/area", {
                 "layer_id": lyr.id, "pixels": pixels, "units": w.units.currentData(),
@@ -2160,11 +2159,22 @@ class MainWindow(QMainWindow):
         self.map.canvas.start_measure("line", colored=True)
         self.map.canvas.setFocus()
 
+    def _canvas_to_pixels(self, lyr, points) -> list:
+        """Canvas positions -> [row, column] of the layer's own pixels (a layer in another coordinate system is placed by its real position)."""
+        display_height, display_width = lyr.rgba.shape[:2]
+        place = self.ws.placement(lyr)
+        out = []
+        for cx, cy in points:
+            if place is not None:
+                hit = map_geometry.to_layer_pixel(place, cx, cy)
+                if hit is not None:
+                    cx, cy = hit
+            out.append([cy * lyr.source_height / display_height, cx * lyr.source_width / display_width])
+        return out
+
     def _profile_fetch(self, lyr, points: list, units: str) -> dict:
         """Ask the backend for the elevation profile along one clicked line."""
-        display_height, display_width = lyr.rgba.shape[:2]
-        pixels = [[cy * lyr.source_height / display_height, cx * lyr.source_width / display_width]
-                  for cx, cy in points]
+        pixels = self._canvas_to_pixels(lyr, points)
         return self.api_post("/analysis/measure/elevation-profile", {
             "layer_id": lyr.id, "pixels": pixels, "units": units, "samples": 400})
 
@@ -2228,8 +2238,7 @@ class MainWindow(QMainWindow):
         return f"{res['total']:,.{d}f} {unit}", sub
 
     def _measure_fetch(self, kind: str, lyr, pts: list, units: str) -> dict:
-        display_height, display_width = lyr.rgba.shape[:2]
-        pixels = [[cy * lyr.source_height / display_height, cx * lyr.source_width / display_width] for cx, cy in pts]
+        pixels = self._canvas_to_pixels(lyr, pts)
         if kind == "polygon":
             return self.api_post("/analysis/measure/area", {"layer_id": lyr.id, "pixels": pixels, "units": units,
                                                             "include_surface": False})
@@ -2326,9 +2335,7 @@ class MainWindow(QMainWindow):
         if len(points) < 2:
             w.show_waiting("Click the second point." if points else "Click the first point on the map.")
             return
-        display_height, display_width = lyr.rgba.shape[:2]
-        pixels = [[cy * lyr.source_height / display_height, cx * lyr.source_width / display_width]
-                  for cx, cy in points]
+        pixels = self._canvas_to_pixels(lyr, points)
         try:
             res = self.api_post("/analysis/measure/distance", {
                 "layer_id": lyr.id, "pixels": pixels, "units": w.units.currentData(),

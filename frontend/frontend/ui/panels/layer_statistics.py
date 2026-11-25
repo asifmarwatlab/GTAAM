@@ -29,6 +29,7 @@ from PyQt6.QtWidgets import (
 )
 
 from ui.panels.icon_generator import icon, pixmap
+from ui.panels import map_geometry
 from ui.panels.crs_info import describe_crs, pixel_unit
 
 DASH = "—"
@@ -421,6 +422,7 @@ class SampleWorkspace:
             visible=True,
             desc=f"Derived from {source.name}",
             vector_lines=lines,
+            vec_raster=source.id,
             user_added=True,
             source_width=width,
             source_height=height,
@@ -430,7 +432,29 @@ class SampleWorkspace:
         self.layers.append(layer)
         return layer
 
+    def reference_raster(self) -> Optional[Layer]:
+        """The first raster with real coordinates: the canvas counts in its cells."""
+        return next((l for l in self.layers if l.group == "raster" and l.data is None and l.rgba is not None
+                     and l.bounds and l.crs), None)
+
+    def placement(self, lyr: Layer):
+        """Six numbers that move the layer's picture to its true place on the canvas, or None to draw it as before."""
+        ref = self.reference_raster()
+        if ref is None or lyr.rgba is None or lyr.data is not None or not (lyr.bounds and lyr.crs):
+            return None
+        if lyr is ref:
+            return None
+        key = (ref.id, tuple(ref.bounds), ref.crs, tuple(lyr.bounds), lyr.crs, lyr.rgba.shape[:2])
+        cache = self.__dict__.setdefault("_placements", {})
+        if key not in cache:
+            rh, rw = ref.rgba.shape[:2]
+            h, w = lyr.rgba.shape[:2]
+            cache[key] = map_geometry.placement(tuple(ref.bounds), (rw, rh), ref.crs,
+                                                tuple(lyr.bounds), (w, h), lyr.crs)
+        return cache[key]
+
     def extent_cells(self, only_visible: bool = True) -> tuple[float, float, float, float]:
+        x0 = y0 = 0.0
         x1 = y1 = 0.0
         has_raster = False
         for lyr in self.rasters():
@@ -440,11 +464,17 @@ class SampleWorkspace:
                 )
                 if shape is not None:
                     has_raster = True
+                    t = self.placement(lyr)
+                    if t is not None:
+                        bx0, by0, bx1, by1 = map_geometry.canvas_box(t, (shape[1], shape[0]))
+                        x0, y0 = min(x0, bx0), min(y0, by0)
+                        x1, y1 = max(x1, bx1), max(y1, by1)
+                        continue
                     x1 = max(x1, float(lyr.col0 + shape[1]))
                     y1 = max(y1, float(shape[0]))
         if not has_raster:
             return 0.0, 0.0, float(self.WIDTH), float(self.HEIGHT)
-        return 0.0, 0.0, max(x1, 1.0), max(y1, 1.0)
+        return x0, y0, max(x1, x0 + 1.0), max(y1, y0 + 1.0)
 
     def stats(self, lyr: Layer) -> Optional[dict]:
         if lyr._stats is not None:

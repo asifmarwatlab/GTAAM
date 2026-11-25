@@ -4,12 +4,14 @@ import numpy as np
 from PyQt6.QtCore import QPointF, QRectF, Qt, QTimer, pyqtSignal
 from PyQt6.QtGui import (
     QBrush, QColor, QFont, QImage, QPainter, QPainterPath, QPen, QPolygonF,
+    QTransform,
 )
 from PyQt6.QtWidgets import (
     QFrame, QGridLayout, QHBoxLayout, QInputDialog, QLabel, QMenu, QPushButton, QToolButton,
     QVBoxLayout, QWidget,
 )
 
+from ui.panels import map_geometry
 from ui.panels.icon_generator import icon, pixmap
 from ui.panels.layer_statistics import LAYER_MIME, SampleWorkspace, _project_defaults, fmt, to_dms
 
@@ -82,7 +84,9 @@ class MapCanvas(QWidget):
 
     def ground_cell(self) -> float:
         """Metres on the ground covered by one map cell (the backend supplies the real size)."""
-        lyr = next((l for l in self.ws.layers if l.id == self.selected_layer_id), None)
+        lyr = self.ws.reference_raster()          # the canvas counts in cells of this raster
+        if lyr is None or not (lyr.pixel_size_m and lyr.source_width):
+            lyr = next((l for l in self.ws.layers if l.id == self.selected_layer_id), None)
         if lyr is None or not (lyr.pixel_size_m and lyr.rgba is not None and lyr.source_width):
             lyr = next((l for l in self.ws.rasters()
                         if l.pixel_size_m and l.rgba is not None and l.source_width), None)
@@ -131,7 +135,10 @@ class MapCanvas(QWidget):
             shape = lyr.data.shape if lyr.data is not None else (
                 lyr.rgba.shape[:2] if lyr.rgba is not None else None
             )
-            if shape is not None:
+            t = self.ws.placement(lyr)
+            if shape is not None and t is not None:
+                self.fit(map_geometry.canvas_box(t, (shape[1], shape[0])))
+            elif shape is not None:
                 self.fit((lyr.col0, 0, lyr.col0 + shape[1], shape[0]))
             else:
                 self.fit()
@@ -433,7 +440,14 @@ class MapCanvas(QWidget):
             if lyr is swiped:
                 p.save()
                 p.setClipRect(QRectF((self._swipe_x() - self.ox) / s, -1e7, 1e7, 2e7))
-            p.drawImage(QRectF(lyr.col0, 0, w, h), self._image(lyr))
+            place = self.ws.placement(lyr)
+            if place is None:
+                p.drawImage(QRectF(lyr.col0, 0, w, h), self._image(lyr))
+            else:                                    # a raster in another coordinate system: draw it where it really is
+                p.save()
+                p.setTransform(QTransform(*place[:2], *place[2:4], *place[4:]), True)
+                p.drawImage(QRectF(0, 0, w, h), self._image(lyr))
+                p.restore()
             if lyr is swiped:
                 p.restore()
             p.setCompositionMode(QPainter.CompositionMode.CompositionMode_SourceOver)
@@ -463,6 +477,8 @@ class MapCanvas(QWidget):
             if not lyr.visible or lyr.group != "vector" or not lyr.vector_lines:
                 continue
             p.setOpacity(lyr.opacity / 100)
+            p.save()
+            self._follow_source(p, lyr)
             for level, points in lyr.vector_lines:
                 path = QPainterPath()
                 path.moveTo(float(points[0, 0]), float(points[0, 1]))
@@ -474,6 +490,7 @@ class MapCanvas(QWidget):
                 pen.setCosmetic(True)
                 p.setPen(pen)
                 p.drawPath(path)
+            p.restore()
         p.setOpacity(1)
 
         # mosaic preview: highlight the overlap between Upper_Indus_DEM and DEM_East
@@ -488,7 +505,10 @@ class MapCanvas(QWidget):
         # vector files: the backend sends shapes already in drawing cells
         for lyr in reversed(self.ws.layers):             # top of the Layers list draws on top
             if lyr.visible and lyr.shapes:
+                p.save()
+                self._follow_source(p, lyr)
                 self._draw_shapes(p, lyr)
+                p.restore()
         p.setOpacity(1)
         p.restore()
 
@@ -613,6 +633,13 @@ class MapCanvas(QWidget):
                 p.setPen(QColor("#12384f"))
                 p.drawText(QRectF(tx, 10, tw, 24), Qt.AlignmentFlag.AlignCenter, text)
         p.end()
+
+    def _follow_source(self, p: QPainter, lyr) -> None:
+        """Move the painter so a layer's shapes sit on the raster they were made from."""
+        src = next((l for l in self.ws.layers if l.id == lyr.vec_raster), None) if lyr.vec_raster else None
+        t = self.ws.placement(src) if src is not None else None
+        if t is not None:
+            p.setTransform(QTransform(*t[:2], *t[2:4], *t[4:]), True)
 
     @staticmethod
     def _draw_shapes(p: QPainter, lyr) -> None:
@@ -1252,6 +1279,13 @@ class MapSection(QFrame):
         lyr = self.ws.layer(self.selected_layer_id)
         if lyr.user_added and lyr.data is None and lyr.rgba is not None:
             display_height, display_width = lyr.rgba.shape[:2]
+            place = self.ws.placement(lyr)
+            if place is not None:                    # pointer is in canvas cells; find the pixel of this picture under it
+                hit = map_geometry.to_layer_pixel(place, cx, cy)
+                if hit is None:
+                    self.clear_pixel()
+                    return
+                cx, cy = hit
             if not (0 <= cx < display_width and 0 <= cy < display_height):
                 self._pending_pixel_sample = None
                 self._pixel_sample_timer.stop()
